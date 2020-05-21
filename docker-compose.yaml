@@ -1,0 +1,137 @@
+version: "3.6"
+networks:
+  default:
+    driver: bridge
+
+services:
+  service-auth:
+    build: "."
+    command: ["service-auth"]
+    networks:
+      - default
+    ports:
+      - "8084:8084"
+
+  service-command:
+    build: "."
+    volumes:
+      - ./wait-for-mysql.sh:/wait-for-mysql.sh
+    command: ["/wait-for-mysql.sh", "--", "service-command"]
+    depends_on:
+      - mysql
+      - nats
+      - elasticsearch
+    networks:
+      - default
+    links:
+      - mysql
+      - nats
+      - elasticsearch
+    ports:
+      - "8081:8081"
+    environment:
+      MYSQL_USER: root
+      MYSQL_PASSWORD: password
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: taxi
+      NATS_ADDRESS: "nats:4222"
+
+  service-query:
+    build: "."
+    volumes:
+      - ./wait-for-mysql.sh:/wait-for-mysql.sh
+    command: ["/wait-for-mysql.sh", "--", "service-query"]
+    depends_on:
+      - mysql
+      - nats
+      - elasticsearch
+    networks:
+      - default
+    links:
+      - mysql
+      - nats
+      - elasticsearch
+    ports:
+      - "8082:8082"
+    environment:
+      MYSQL_USER: root
+      MYSQL_PASSWORD: password
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: taxi
+      NATS_ADDRESS: "nats:4222"
+      ELASTICSEARCH_ADDRESS: "elasticsearch:9200"
+
+  service-pusher:
+    build: "."
+    command: ["service-pusher"]
+    depends_on:
+      - nats
+    networks:
+      - default
+    links:
+      - nats
+    ports:
+      - "8083:8083"
+    environment:
+      NATS_ADDRESS: "nats:4222"
+
+  service-rproxy:
+    build: "./service-rproxy"
+    volumes:
+      - ./mnt/opt/cache:/data/nginx/cache
+      - ./service-rproxy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./service-rproxy/cert:/etc/nginx/cert
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - "service-auth"
+      - "service-command"
+      - "service-query"
+      - "service-pusher"
+    networks:
+      - default
+    links:
+      - "service-auth"
+      - "service-command"
+      - "service-query"
+      - "service-pusher"
+      
+  mysql:
+    image: mariadb:10.4.12
+    # volumes:
+    #   - ./mnt/opt/data/mysql:/var/lib/mysql
+      # - ./db/sql/init_sql:/docker-entrypoint-initdb.d
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: taxi
+      MYSQL_ROOT_HOST: '%'
+      MYSQL_HOST: mysql # this env is set for healthcheck
+    ports:
+      - 3306:3306
+    networks:
+      - default
+    command: --innodb-flush-method=fsync --default-authentication-plugin=mysql_native_password --character-set-server=utf8 --collation-server=utf8_unicode_ci
+    healthcheck:
+      test: mysqladmin ping -h $$MYSQL_HOST -u $$MYSQL_USER --password=$$MYSQL_PASSWORD
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  nats:
+    image: nats-streaming
+    ports:
+      - 4221:4222
+    networks:
+      - default
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch-oss:6.4.1
+    ports:
+      - 9200:9200
+    networks:
+      - default
